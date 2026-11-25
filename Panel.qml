@@ -29,6 +29,10 @@ Panel {
   property int overdueCount: 0
   property string lastError: ""
   property var syncState: null
+  property var allTags: []
+  property string filterTag: ""
+  readonly property var visiblePending: filterTag === "" ? pending
+    : pending.filter(function(t) { return (t.tags || []).indexOf(filterTag) >= 0 })
   property var preview: null
   property var queue: []
 
@@ -76,6 +80,8 @@ Panel {
     done = (s.done || []).slice(0, 6)
     overdueCount = Number(s.overdueCount || 0)
     syncState = s.sync || null
+    allTags = (s.tags || []).slice(0, 30)
+    if (filterTag !== "" && allTags.indexOf(filterTag) < 0) filterTag = ""
     lastError = ""
   }
 
@@ -88,10 +94,16 @@ Panel {
     tickProc.running = true
   }
 
+  // Com um filtro ativo, a tarefa nova já entra com aquela tag.
+  function withFilterTag(text) {
+    if (filterTag === "" || (" " + text.toLowerCase() + " ").indexOf(" #" + filterTag + " ") >= 0) return text
+    return text + " #" + filterTag
+  }
+
   function addTask(text) {
     var t = String(text || "").trim()
     if (!t) return
-    run(["add", t])
+    run(["add", withFilterTag(t)])
     addField.text = ""
     preview = null
   }
@@ -136,6 +148,8 @@ Panel {
     }
     var left = root.maxSnoozes - (t.snoozes || 0)
     if (left <= 0) parts.push("sem adiamentos")
+    var tags = (t.tags || []).filter(function(x) { return x !== root.filterTag })
+    if (tags.length) parts.push("#" + tags.join(" #"))
     return parts.join("  ·  ")
   }
 
@@ -144,6 +158,7 @@ Panel {
     var s = "→ " + preview.title
     if (preview.dueText) s += "  ·  " + preview.dueText
     if (preview.priority !== 2) s += "  ·  " + priorityText(preview.priority)
+    if (preview.tags && preview.tags.length) s += "  ·  #" + preview.tags.join(" #")
     return s
   }
 
@@ -199,7 +214,7 @@ Panel {
     interval: 220
     onTriggered: {
       if (previewProc.running) { restart(); return }
-      previewProc.command = ["python3", "-I", root.helperPath, "parse", addField.text.trim()]
+      previewProc.command = ["python3", "-I", root.helperPath, "parse", root.withFilterTag(addField.text.trim())]
       previewProc.running = true
     }
   }
@@ -308,7 +323,7 @@ Panel {
           TextField {
             id: addField
             width: parent.width
-            placeholderText: "Nova tarefa…  ex: Pagar boleto amanhã 10h !"
+            placeholderText: root.filterTag !== "" ? "Nova tarefa em #" + root.filterTag + "…" : "Nova tarefa…  ex: Pagar boleto amanhã 10h ! #casa"
             foreground: root.foreground
             font.family: root.fontFamily
             maximumLength: 200
@@ -346,6 +361,54 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
 
+          // Filtro por tag: clique para mostrar só aquela tag; de novo, tudo.
+          Flow {
+            width: parent.width
+            visible: root.allTags.length > 0
+            spacing: Style.space(6)
+            Repeater {
+              model: root.allTags
+              Rectangle {
+                required property string modelData
+                readonly property bool on: root.filterTag === modelData
+                width: chipText.implicitWidth + Style.space(14)
+                height: chipText.implicitHeight + Style.space(6)
+                radius: height / 2
+                color: on ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.22)
+                          : (chipMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent")
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, on ? 0.6 : 0.25)
+                Text {
+                  id: chipText
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: "#" + parent.modelData
+                  color: parent.on ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                MouseArea {
+                  id: chipMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.filterTag = parent.on ? "" : parent.modelData
+                }
+              }
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.filterTag !== "" && root.visiblePending.length === 0
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: "Nada pendente em #" + root.filterTag
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
           Text {
             textFormat: Text.PlainText
             visible: root.pending.length === 0
@@ -364,7 +427,7 @@ Panel {
             width: parent.width
             spacing: Style.space(2)
             Repeater {
-              model: root.pending
+              model: root.visiblePending
               TaskRow {
                 required property var modelData
                 width: pendingColumn.width
@@ -397,7 +460,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: "! alta · !baixa · hoje · amanhã · sexta · 15/12 · dia 30 · 14h · 9:30 · em 2h"
+            text: "! alta · !baixa · #tag · hoje · amanhã · sexta · 15/12 · dia 30 · 14h · 9:30 · em 2h"
             color: Qt.darker(root.foreground, 2.2)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

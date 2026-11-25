@@ -5,7 +5,7 @@ Configuração em ~/.config/tarefas/boletos.conf (fora do repositório):
   [pessoal]
   pasta = /home/voce/GoogleDrive/Finanças/Boletos
   # remote = gdrive:Finanças/Boletos   (opcional; deduzido se a pasta está no ponto de montagem)
-  # rotulo =                           (opcional; vai no título: "Pagar X (rotulo)")
+  # rotulo =                           (opcional; vira tag. Padrão: o nome da seção)
 
   [empresa]
   pasta = /home/voce/GoogleDrive/Finanças/Empresa/Pagamentos
@@ -339,8 +339,6 @@ def scan(today=None, seen=()):
 
 def task_text(b):
     title = "Pagar " + b["title"]
-    if b["label"]:
-        title += " (%s)" % b["label"]
     if b["value"]:
         title += " · " + brl(b["value"])
     lines = []

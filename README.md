@@ -19,9 +19,10 @@ omarchy bar put logan.tarefas --section centerBegin --index 0
 
 ## Sintaxe rápida
 
-`Pagar boleto amanhã 10h !` · `Ligar dentista sexta 14:30` · `Revisar contrato dia 30 !baixa` · `Mandar email em 2h`
+`Pagar boleto amanhã 10h !` · `Comprar cimento sábado #obra` · `Ligar dentista sexta 14:30` · `Revisar contrato dia 30 !baixa` · `Mandar email em 2h`
 
 - Prioridade: `!` / `!alta`, `!media`, `!baixa`
+- Tags: `#obra`, `#empresa`… (saem do título; no painel, clique numa tag para filtrar — com filtro ativo, a tarefa nova já entra com a tag). Sincronizam como categorias (Tasks.org mostra e filtra).
 - Data: `hoje`, `amanhã`, `segunda`…`domingo`, `15/12`, `dia 30`, `em 30min|2h|3d`
 - Hora: `14h`, `14h30`, `9:30` (data sem hora = 9h)
 
@@ -69,6 +70,7 @@ rotulo = empresa
 ```
 
 - Vencimento e valor saem do código de barras (bancário ou de arrecadação, como DAS e DARF), do texto do PDF ou do nome do arquivo (`08 - Claro - Boleto.pdf` na pasta `2026/12`).
+- Entra com as tags `#pagamento` e `#pessoal`/`#empresa` (nome da seção ou `rotulo`).
 - A tarefa traz o link do Drive (abre no celular) e o código de barras. No painel, 󰈙 abre o PDF e 󰆏 copia o código.
 - Um `Comprovante` com o mesmo nome conclui a tarefa.
 - Arquivos duplicados (mesmo código de barras) viram uma tarefa só. Nomes com "não pagar" ou "gerada errada" são ignorados.
@@ -80,7 +82,8 @@ rotulo = empresa
 
 ```
 python3 tarefas.py add "Pagar boleto amanhã 10h !"
-python3 tarefas.py ls
+python3 tarefas.py ls [#tag]
+python3 tarefas.py tag <id> +obra -casa
 python3 tarefas.py done <id>
 ```
 

@@ -5,7 +5,8 @@ Armazena em ~/.local/share/tarefas/tarefas.json. Usado pelo widget da barra
 (logan.tarefas) e também direto pelo terminal:
 
   tarefas.py add "Pagar boleto amanhã 10h !"
-  tarefas.py ls
+  tarefas.py ls [#tag]
+  tarefas.py tag <id> +obra -casa
   tarefas.py done <id>
   tarefas.py snooze <id> 60
   tarefas.py tick            # decide e envia as cobranças (chamado pelo widget)
@@ -139,10 +140,25 @@ def fold(s):
 TIME_RE = re.compile(r"^(?:(\d{1,2})h(\d{2})?|(\d{1,2}):(\d{2}))$")
 DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?$")
 REL_RE = re.compile(r"^(\d{1,3})(min|m|h|d)$")
+TAG_RE = re.compile(r"^#([\w-]{1,30})$")
+MAX_TAGS = 8
+
+
+def norm_tag(tag):
+    """'#Obra-Casa' → 'obra-casa' (minúsculas; acentos mantidos)."""
+    return tag.lstrip("#").strip().lower()[:30]
+
+
+def add_tags(tags, new):
+    for t in new:
+        t = norm_tag(t)
+        if t and t not in tags and len(tags) < MAX_TAGS:
+            tags.append(t)
+    return tags
 
 
 def parse(text, now=None):
-    """'Pagar boleto amanhã 10h !' -> (title, due_epoch|None, priority)."""
+    """'Pagar boleto amanhã 10h ! #casa' -> (title, due_epoch|None, priority, tags)."""
     now = now or dt.datetime.now()
     words = text.split()
     keep = []
@@ -150,13 +166,16 @@ def parse(text, now=None):
     date = None
     tod = None
     rel = None
+    tags = []
     i = 0
     while i < len(words):
         w = words[i]
         f = fold(w).strip(",.;")
         nxt = fold(words[i + 1]).strip(",.;") if i + 1 < len(words) else ""
 
-        if re.fullmatch(r"!{1,3}|!alta|!a|!urgente", f):
+        if TAG_RE.match(w.strip(",.;")):
+            add_tags(tags, [TAG_RE.match(w.strip(",.;")).group(1)])
+        elif re.fullmatch(r"!{1,3}|!alta|!a|!urgente", f):
             priority = 1
         elif f in ("!media", "!m"):
             priority = 2
@@ -239,7 +258,7 @@ def parse(text, now=None):
             due = dt.datetime.combine(date, dt.time(DEFAULT_MORNING_HOUR, 0))
             if due < now:
                 due = now.replace(second=0, microsecond=0)
-    return title, (int(due.timestamp()) if due else None), priority
+    return title, (int(due.timestamp()) if due else None), priority, tags
 
 
 # ── Formatting ──────────────────────────────────────────────────────────────
@@ -294,6 +313,7 @@ def public(db, now):
         "pendingCount": len(pending),
         "overdueCount": sum(1 for t in pending if t["overdue"]),
         "sync": db.get("sync"),
+        "tags": sorted({x for t in pending for x in (t.get("tags") or [])}),
     }
 
 
@@ -407,7 +427,7 @@ def is_dirty(t):
 
 def apply_remote(t, r, now):
     old_due = t.get("due")
-    for k in ("title", "priority", "done", "notes", "url", "uid"):
+    for k in ("title", "priority", "done", "notes", "url", "uid", "tags"):
         t[k] = r.get(k)
     t["due"] = r.get("due")
     if "snoozes" in r:
@@ -646,7 +666,8 @@ def import_boletos(dry_run=False, verbose=False):
             t = {"id": tid, "uid": uid + "@tarefas", "newHref": uid + ".ics", "title": title[:MAX_TITLE],
                  "priority": 1, "due": due, "created": now, "done": None, "snoozeUntil": 0, "snoozes": 0,
                  "lastNag": 0, "notes": notes, "url": b["url"], "localPath": b["path"],
-                 "barcodeDigits": b["barcodeDigits"], "boleto": b["matchKey"]}
+                 "barcodeDigits": b["barcodeDigits"], "boleto": b["matchKey"],
+                 "tags": add_tags([], ["pagamento", b["label"] or b["source"]])}
             if any(x.get("uid") == t["uid"] for x in db["tasks"]):
                 continue
             touch(t, now)
@@ -750,24 +771,28 @@ def main(argv):
                 print(("󰓦 sincronizado %s" % when) if st.get("ok") else ("󰓨 sem sincronizar (%s): %s" % (when, st.get("error", ""))))
             if not p["pending"]:
                 print("Nada pendente. 🎉")
+            want = [norm_tag(a) for a in args if a.startswith("#")]
             for t in p["pending"]:
+                if want and not all(w in (t.get("tags") or []) for w in want):
+                    continue
                 flag = "!" if t.get("priority") == 1 else ("·" if t.get("priority") == 2 else " ")
                 extra = []
                 if t["dueText"]:
                     extra.append(("ATRASADA " if t["overdue"] else "") + t["dueText"])
                 if t["snoozed"]:
                     extra.append("adiada")
-                print("%s %s  %s%s" % (t["id"][:6], flag, t["title"], ("   [" + ", ".join(extra) + "]") if extra else ""))
+                tags = "".join("  #" + x for x in (t.get("tags") or []))
+                print("%s %s  %s%s%s" % (t["id"][:6], flag, t["title"], tags, ("   [" + ", ".join(extra) + "]") if extra else ""))
             return 0
 
         if cmd == "parse":
-            title, due, pr = parse(" ".join(args))
-            out({"title": title, "due": due, "dueText": human_due(due), "priority": pr})
+            title, due, pr, tags = parse(" ".join(args))
+            out({"title": title, "due": due, "dueText": human_due(due), "priority": pr, "tags": tags})
             return 0
 
         if cmd == "add":
             text = " ".join(args).strip()
-            title, due, pr = parse(text)
+            title, due, pr, tags = parse(text)
             if not title:
                 print("Tarefa vazia", file=sys.stderr)
                 return 2
@@ -775,14 +800,14 @@ def main(argv):
                 print("Muitas tarefas pendentes", file=sys.stderr)
                 return 2
             tid = uuid.uuid4().hex[:12]
-            t = {"id": tid, "uid": "%s@tarefas" % tid, "title": title, "priority": pr, "due": due,
+            t = {"id": tid, "uid": "%s@tarefas" % tid, "title": title, "priority": pr, "due": due, "tags": tags,
                  "created": now, "done": None, "snoozeUntil": 0, "snoozes": 0, "lastNag": 0}
             touch(t, now)
             db["tasks"].append(t)
             changed = True
             out(t)
 
-        elif cmd in ("done", "undo", "delete", "rm", "snooze", "snooze-from-notif", "priority", "due", "rename"):
+        elif cmd in ("done", "undo", "delete", "rm", "snooze", "snooze-from-notif", "priority", "due", "rename", "tag"):
             if not args:
                 print("Faltou o id", file=sys.stderr)
                 return 2
@@ -831,7 +856,7 @@ def main(argv):
                 if fold(text) in ("", "nenhum", "sem", "remover"):
                     t["due"] = None
                 else:
-                    _, due, _ = parse("x " + text)
+                    _, due, _, _ = parse("x " + text)
                     if not due:
                         print("Não entendi a data", file=sys.stderr)
                         return 2
@@ -842,6 +867,14 @@ def main(argv):
                 if not title:
                     return 2
                 t["title"] = title
+            elif cmd == "tag":
+                tags = list(t.get("tags") or [])
+                for a in args[1:]:
+                    if a.startswith("-"):
+                        tags = [x for x in tags if x != norm_tag(a[1:])]
+                    else:
+                        add_tags(tags, [a.lstrip("+")])
+                t["tags"] = tags
             if cmd not in ("delete", "rm"):
                 touch(t, now)
             changed = True

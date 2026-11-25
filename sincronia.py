@@ -280,7 +280,25 @@ PRIO_OUT = {1: "1", 2: "5", 3: "9"}
 
 # Propriedades que esta ponta controla; o resto (de outros clientes) é preservado.
 OWNED = {"SUMMARY", "DUE", "PRIORITY", "STATUS", "COMPLETED", "PERCENT-COMPLETE", "DESCRIPTION", "URL",
-         "LAST-MODIFIED", "DTSTAMP", "X-TAREFAS-SNOOZES", "X-TAREFAS-SNOOZE-UNTIL", "UID"}
+         "LAST-MODIFIED", "DTSTAMP", "X-TAREFAS-SNOOZES", "X-TAREFAS-SNOOZE-UNTIL", "UID", "CATEGORIES"}
+
+
+def _split_list(value):
+    """CATEGORIES:a,b\\,c → ['a', 'b,c']"""
+    out, cur, i = [], "", 0
+    while i < len(value):
+        if value[i] == "\\" and i + 1 < len(value):
+            cur += value[i:i + 2]
+            i += 2
+            continue
+        if value[i] == ",":
+            out.append(cur)
+            cur = ""
+        else:
+            cur += value[i]
+        i += 1
+    out.append(cur)
+    return [_unesc(x).strip() for x in out if x.strip()]
 
 
 def from_ics(ics):
@@ -290,7 +308,7 @@ def from_ics(ics):
     if s is None or e is None:
         return None
     t = {"title": "", "due": None, "priority": 2, "done": None, "notes": "", "url": "",
-         "uid": None, "lastModified": 0}
+         "uid": None, "lastModified": 0, "tags": []}
     depth = 0
     status = None
     for l in lines[s + 1:e]:
@@ -319,6 +337,11 @@ def from_ics(ics):
             t["notes"] = _unesc(value)
         elif name == "URL":
             t["url"] = value
+        elif name == "CATEGORIES":
+            for c in _split_list(value):
+                c = c.lower()[:30]
+                if c not in t["tags"] and len(t["tags"]) < 8:
+                    t["tags"].append(c)
         elif name == "LAST-MODIFIED":
             t["lastModified"] = _parse_time(params, value) or 0
         elif name == "X-TAREFAS-SNOOZES":
@@ -358,6 +381,8 @@ def to_ics(task, now, base=None):
         own.append("DESCRIPTION:%s" % _esc(task["notes"]))
     if task.get("url"):
         own.append("URL:%s" % task["url"])
+    if task.get("tags"):
+        own.append("CATEGORIES:%s" % ",".join(_esc(x) for x in task["tags"]))
     if task.get("snoozes"):
         own.append("X-TAREFAS-SNOOZES:%d" % task["snoozes"])
     if task.get("snoozeUntil"):
