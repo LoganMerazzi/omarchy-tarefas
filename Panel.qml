@@ -22,6 +22,7 @@ Panel {
   readonly property int snoozeMin: intSetting("snoozeMin", 60, 5, 1440)
   readonly property int quietStart: intSetting("quietStart", 22, 0, 23)
   readonly property int quietEnd: intSetting("quietEnd", 8, 0, 23)
+  readonly property int nearHours: intSetting("nearHours", 24, 0, 336)
 
   // State from tarefas.py list
   property var pending: []
@@ -90,7 +91,8 @@ Panel {
     tickProc.command = ["python3", "-I", root.helperPath, "tick",
       "--interval", String(nagIntervalMin), "--overdue-interval", String(overdueIntervalMin),
       "--max-snoozes", String(maxSnoozes), "--snooze", String(snoozeMin),
-      "--quiet-start", String(quietStart), "--quiet-end", String(quietEnd)]
+      "--quiet-start", String(quietStart), "--quiet-end", String(quietEnd),
+      "--near-hours", String(nearHours)]
     tickProc.running = true
   }
 

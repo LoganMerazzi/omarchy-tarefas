@@ -20,6 +20,7 @@
     "defaultSection": "centerBegin",
     "defaults": {
       "nagIntervalMin": 60,
+      "nearHours": 24,
       "overdueIntervalMin": 30,
       "maxSnoozes": 3,
       "snoozeMin": 60,
@@ -28,6 +29,7 @@
     },
     "schema": [
       { "key": "nagIntervalMin", "type": "integer", "label": "Cobrança geral a cada (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 60, "description": "Lembra a pendência mais importante nesse intervalo." },
+      { "key": "nearHours", "type": "integer", "label": "Cobrar tarefas com prazo a partir de (horas antes)", "min": 0, "max": 336, "step": 1, "defaultValue": 24, "description": "Antes disso, a tarefa só avisa na hora do prazo. Tarefas sem prazo continuam na cobrança geral." },
       { "key": "overdueIntervalMin", "type": "integer", "label": "Tarefa atrasada: repetir a cada (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 30 },
       { "key": "maxSnoozes", "type": "integer", "label": "Máximo de adiamentos por tarefa", "min": 0, "max": 99, "step": 1, "defaultValue": 3, "description": "Depois disso, só dá para concluir ou apagar." },
       { "key": "snoozeMin", "type": "integer", "label": "Adiar por (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 60 },

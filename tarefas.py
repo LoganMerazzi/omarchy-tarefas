@@ -390,8 +390,12 @@ def tick(db, now, opts):
             fire(t, "Atrasada há %s: %s" % (human_ago(now - due), t["title"]), "Era para %s." % human_due(due), "critical")
 
     # 2) Cobrança geral: a pendência mais importante, a cada `interval`.
+    #    Com prazo, só entra quando o prazo está perto (`near_hours`); antes
+    #    disso a tarefa fica quieta até a hora do aviso de prazo.
     if not sent and now - (db.get("lastGeneralNag") or 0) >= interval:
-        candidates = [t for t in awake if not (t.get("due") and t["due"] <= now)]
+        near = opts["near_hours"] * 3600
+        candidates = [t for t in awake if not (t.get("due") and t["due"] <= now)
+                      and (not t.get("due") or t["due"] - now <= near)]
         candidates = [t for t in candidates if not t.get("due") or t["due"] - now > 3600 or t.get("priority", 2) == 1] or candidates
         if candidates:
             t = sorted(candidates, key=sort_key)[0]
@@ -911,6 +915,7 @@ def main(argv):
                 "snooze_min": opt_int(args, "--snooze", 60, 5, 24 * 60),
                 "quiet_start": opt_int(args, "--quiet-start", 22, 0, 23),
                 "quiet_end": opt_int(args, "--quiet-end", 8, 0, 23),
+                "near_hours": opt_int(args, "--near-hours", 24, 0, 24 * 14),
             }
             sent = tick(db, now, opts)
             if now - (db.get("lastSyncTry") or 0) >= SYNC_EVERY and sincronia.config():

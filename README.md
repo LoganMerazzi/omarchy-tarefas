@@ -30,7 +30,7 @@ omarchy bar put logan.tarefas --section centerBegin --index 0
 
 A cada minuto o widget roda `tarefas.py tick`:
 - prazo chegou → notificação na hora; atrasada → repete a cada 30 min (crítica)
-- sem atraso → a cada 60 min lembra a pendência mais importante
+- sem atraso → a cada 60 min lembra a pendência mais importante: sem prazo, ou com prazo nas próximas 24h (tarefas com prazo distante ficam quietas)
 - botões: Abrir lista · Adiar · Feito; esgotados os adiamentos, só resta fazer ou apagar
 - silêncio das 22h às 8h
 
