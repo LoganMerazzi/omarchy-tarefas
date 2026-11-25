@@ -28,6 +28,7 @@ Panel {
   property var done: []
   property int overdueCount: 0
   property string lastError: ""
+  property var syncState: null
   property var preview: null
   property var queue: []
 
@@ -74,6 +75,7 @@ Panel {
     pending = s.pending.slice(0, 200)
     done = (s.done || []).slice(0, 6)
     overdueCount = Number(s.overdueCount || 0)
+    syncState = s.sync || null
     lastError = ""
   }
 
@@ -103,9 +105,14 @@ Panel {
   // ── Formatting ─────────────────────────────────────────────────────────
 
   function heroMeta() {
-    if (pending.length === 0) return "Tudo em dia"
-    var s = pending.length === 1 ? "1 pendente" : pending.length + " pendentes"
-    if (overdueCount > 0) s += " · " + (overdueCount === 1 ? "1 atrasada" : overdueCount + " atrasadas")
+    var s
+    if (pending.length === 0) s = "Tudo em dia"
+    else {
+      s = pending.length === 1 ? "1 pendente" : pending.length + " pendentes"
+      if (overdueCount > 0) s += " · " + (overdueCount === 1 ? "1 atrasada" : overdueCount + " atrasadas")
+    }
+    // Só avisa quando a sincronização está falhando; sincronizado é o normal.
+    if (syncState && !syncState.ok) s += " · 󰓨 offline"
     return s
   }
 

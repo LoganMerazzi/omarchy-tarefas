@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+# Nunca versionar credenciais nem dados pessoais
+*.env
+.env*
+users
+radicale-users
+*.ics
+tarefas.json
+*.pdf

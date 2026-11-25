@@ -35,6 +35,24 @@ A cada minuto o widget roda `tarefas.py tick`:
 
 Intervalos, limite de adiamentos e horário de silêncio ficam nas configurações do widget.
 
+## Sincronização (CalDAV)
+
+Opcional. Com `~/.config/tarefas/caldav.env` presente, as tarefas viram VTODO
+num servidor CalDAV (aqui, Radicale no CasaOS; veja `extras/bastion/`) e
+aparecem em qualquer cliente: no Android, o Tasks.org.
+
+```
+CALDAV_URL=https://servidor/
+CALDAV_USER=usuario
+CALDAV_PASSWORD=...
+CALDAV_COLLECTION=/usuario/tarefas/   # opcional
+```
+
+- A lista local continua sendo a fonte da cobrança: sem rede, nada muda; sincroniza quando o servidor voltar.
+- Sincroniza logo após cada mudança e a cada 2 min. Manual: `python3 tarefas.py sync`.
+- Conflito (mudou nos dois lados): vence a edição mais recente.
+- Campos que outros apps põem na tarefa (categorias, etc.) são preservados.
+
 ## Terminal
 
 ```

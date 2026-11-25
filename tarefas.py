@@ -9,6 +9,7 @@ Armazena em ~/.local/share/tarefas/tarefas.json. Usado pelo widget da barra
   tarefas.py done <id>
   tarefas.py snooze <id> 60
   tarefas.py tick            # decide e envia as cobranças (chamado pelo widget)
+  tarefas.py sync            # sincroniza com o servidor CalDAV (ver sincronia.py)
 """
 
 import datetime as dt
@@ -26,7 +27,14 @@ import uuid
 DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "tarefas")
 DATA_FILE = os.path.join(DATA_DIR, "tarefas.json")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
+SYNC_LOCK_FILE = os.path.join(DATA_DIR, ".sync.lock")
 SELF = os.path.abspath(__file__)
+SYNC_EVERY = 120          # segundos entre sincronizações automáticas
+MAX_TOMBSTONES = 500
+
+# Rodamos com `python3 -I`, que não põe a pasta do script no sys.path.
+sys.path.insert(0, os.path.dirname(SELF))
+import sincronia  # noqa: E402
 
 MAX_TITLE = 200
 MAX_TASKS = 500
@@ -68,6 +76,7 @@ def load():
     if not isinstance(db, dict) or not isinstance(db.get("tasks"), list):
         return empty_db()
     db.setdefault("lastGeneralNag", 0)
+    db.setdefault("tombstones", [])
     db["tasks"] = [t for t in db["tasks"] if isinstance(t, dict) and t.get("id")][:MAX_TASKS]
     return db
 
@@ -95,6 +104,12 @@ class Locked:
 def prune(db, now):
     cutoff = now - KEEP_DONE_DAYS * 86400
     db["tasks"] = [t for t in db["tasks"] if not t.get("done") or t["done"] >= cutoff]
+
+
+def touch(t, now):
+    """Marca uma mudança que precisa ir para o servidor."""
+    t["rev"] = t.get("rev", 0) + 1
+    t["modified"] = now
 
 
 def find(db, task_id):
@@ -268,6 +283,7 @@ def public(db, now):
         "done": done,
         "pendingCount": len(pending),
         "overdueCount": sum(1 for t in pending if t["overdue"]),
+        "sync": db.get("sync"),
     }
 
 
@@ -360,6 +376,150 @@ def tick(db, now, opts):
     return sent
 
 
+# ── Sincronização ───────────────────────────────────────────────────────────
+
+def spawn_sync():
+    """Roda `sync` em segundo plano: o widget e o terminal não esperam a rede."""
+    try:
+        subprocess.Popen([sys.executable, "-I", SELF, "sync"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def is_dirty(t):
+    return not t.get("href") or t.get("rev", 0) != t.get("syncedRev", 0)
+
+
+def apply_remote(t, r, now):
+    old_due = t.get("due")
+    for k in ("title", "priority", "done", "notes", "url", "uid"):
+        t[k] = r.get(k)
+    t["due"] = r.get("due")
+    if "snoozes" in r:
+        t["snoozes"] = r["snoozes"]
+    if "snoozeUntil" in r:
+        t["snoozeUntil"] = r["snoozeUntil"]
+    if t["due"] != old_due:
+        t["lastNag"] = 0 if t["due"] and t["due"] > now else now
+    t["modified"] = r.get("lastModified") or now
+
+
+def merge(db, remote, now):
+    """Aplica o que mudou no servidor e devolve o que falta enviar.
+
+    Conflito (mudou dos dois lados): vence a edição mais recente.
+    """
+    tomb = set(db.get("tombstones", []))
+    known = set()
+    uploads = []
+    for t in list(db["tasks"]):
+        href = t.get("href")
+        if href:
+            known.add(href)
+            if href not in remote:
+                if is_dirty(t):
+                    t["etag"] = None            # apagada lá, mas mexida aqui: recria
+                else:
+                    db["tasks"].remove(t)       # apagada em outro aparelho
+                    continue
+            else:
+                etag, ics = remote[href]
+                if etag != t.get("etag"):
+                    r = sincronia.from_ics(ics)
+                    if r and not (is_dirty(t) and (t.get("modified") or 0) > (r["lastModified"] or 0)):
+                        apply_remote(t, r, now)
+                        t["etag"], t["ics"] = etag, ics
+                        t["syncedRev"] = t.get("rev", 0)
+                        continue
+                    t["etag"] = etag            # vence a local: sobrescreve a versão atual
+        if is_dirty(t):
+            t.setdefault("uid", "%s@tarefas" % t["id"])
+            uploads.append({"id": t["id"], "rev": t.get("rev", 0), "href": href or "%s.ics" % t["id"],
+                            "etag": t.get("etag"), "ics": sincronia.to_ics(t, now, t.get("ics"))})
+
+    for href, (etag, ics) in remote.items():
+        if href in known or href in tomb:
+            continue
+        r = sincronia.from_ics(ics)
+        # Concluídas que não conhecemos ficam só no servidor (histórico do celular).
+        if not r or r["done"] or not r["title"]:
+            continue
+        if sum(1 for t in db["tasks"] if not t.get("done")) >= MAX_TASKS:
+            break
+        t = {"id": uuid.uuid4().hex[:12], "created": now, "snoozeUntil": 0, "snoozes": 0, "lastNag": 0,
+             "href": href, "rev": 0, "syncedRev": 0}
+        apply_remote(t, r, now)
+        t["title"] = t["title"][:MAX_TITLE]
+        t["etag"], t["ics"] = etag, ics
+        db["tasks"].append(t)
+
+    deletes = [h for h in tomb if h in remote]
+    db["tombstones"] = []
+    return uploads, deletes
+
+
+def sync(verbose=False):
+    cfg = sincronia.config()
+    if not cfg:
+        if verbose:
+            print("Sincronização desligada: falta %s" % sincronia.CONFIG_FILE)
+        return 0
+    os.makedirs(DATA_DIR, exist_ok=True)
+    lock = open(SYNC_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # já tem uma sincronização rodando
+
+    dav = sincronia.Dav(cfg)
+    status = {"ok": True}
+    stats = {"enviadas": 0, "apagadas": 0}
+    try:
+        for _round in range(3):
+            dav.ensure_collection()
+            remote = dav.fetch_all()                     # rede, sem segurar a lista
+            now = int(time.time())
+            with Locked():
+                db = load()
+                uploads, deletes = merge(db, remote, now)
+                save(db)
+            results = {}
+            for u in uploads:                            # rede, sem segurar a lista
+                results[u["id"]] = dav.put(u["href"], u["ics"], u["etag"])
+            for h in deletes:
+                dav.delete(h)
+                stats["apagadas"] += 1
+            with Locked():
+                db = load()
+                for u in uploads:
+                    ok, etag = results[u["id"]]
+                    t = next((x for x in db["tasks"] if x["id"] == u["id"]), None)
+                    if not ok or not t:
+                        continue                         # 412: resolve na próxima volta
+                    stats["enviadas"] += 1
+                    t["href"], t["etag"], t["ics"] = u["href"], etag, u["ics"]
+                    if t.get("rev", 0) == u["rev"]:
+                        t["syncedRev"] = u["rev"]
+                pending = any(is_dirty(t) for t in db["tasks"]) or db.get("tombstones")
+                save(db)
+            if not pending:
+                break
+    except sincronia.DavError as e:
+        status = {"ok": False, "error": str(e)[:160]}
+    status["at"] = int(time.time())
+    with Locked():
+        db = load()
+        db["sync"] = status
+        save(db)
+    if verbose:
+        if status["ok"]:
+            print("Sincronizado: %d enviada(s), %d apagada(s) no servidor." % (stats["enviadas"], stats["apagadas"]))
+        else:
+            print("Falhou: %s" % status["error"], file=sys.stderr)
+    return 0 if status["ok"] else 1
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 def out(obj):
@@ -383,6 +543,9 @@ def main(argv):
     cmd, args = argv[0], argv[1:]
     now = int(time.time())
 
+    if cmd == "sync":
+        return sync(verbose=sys.stdout.isatty() or "-v" in args)
+
     if cmd == "open":
         subprocess.run(["omarchy-shell", "-q", "logan.tarefas", "open"], timeout=10)
         return 0
@@ -398,6 +561,10 @@ def main(argv):
 
         if cmd == "ls":
             p = public(db, now)
+            st = p.get("sync")
+            if st:
+                when = dt.datetime.fromtimestamp(st.get("at", 0)).strftime("%d/%m %H:%M")
+                print(("󰓦 sincronizado %s" % when) if st.get("ok") else ("󰓨 sem sincronizar (%s): %s" % (when, st.get("error", ""))))
             if not p["pending"]:
                 print("Nada pendente. 🎉")
             for t in p["pending"]:
@@ -424,8 +591,10 @@ def main(argv):
             if sum(1 for t in db["tasks"] if not t.get("done")) >= MAX_TASKS:
                 print("Muitas tarefas pendentes", file=sys.stderr)
                 return 2
-            t = {"id": uuid.uuid4().hex[:12], "title": title, "priority": pr, "due": due,
+            tid = uuid.uuid4().hex[:12]
+            t = {"id": tid, "uid": "%s@tarefas" % tid, "title": title, "priority": pr, "due": due,
                  "created": now, "done": None, "snoozeUntil": 0, "snoozes": 0, "lastNag": 0}
+            touch(t, now)
             db["tasks"].append(t)
             changed = True
             out(t)
@@ -451,6 +620,8 @@ def main(argv):
                 t["lastNag"] = now
             elif cmd in ("delete", "rm"):
                 db["tasks"].remove(t)
+                if t.get("href"):
+                    db["tombstones"] = (db["tombstones"] + [t["href"]])[-MAX_TOMBSTONES:]
             elif cmd == "snooze":
                 max_snoozes = opt_int(args, "--max", int(db.get("maxSnoozes", 3)), 0, 99)
                 if t.get("snoozes", 0) >= max_snoozes:
@@ -488,6 +659,8 @@ def main(argv):
                 if not title:
                     return 2
                 t["title"] = title
+            if cmd not in ("delete", "rm"):
+                touch(t, now)
             changed = True
             out({"ok": True})
 
@@ -501,6 +674,10 @@ def main(argv):
                 "quiet_end": opt_int(args, "--quiet-end", 8, 0, 23),
             }
             sent = tick(db, now, opts)
+            if now - (db.get("lastSyncTry") or 0) >= SYNC_EVERY and sincronia.config():
+                db["lastSyncTry"] = now
+                changed = True
+                spawn_sync()
             changed = bool(sent) or db.get("maxSnoozes") != opts["max_snoozes"]
             db["maxSnoozes"] = opts["max_snoozes"]
             out({"sent": sent})
@@ -511,6 +688,8 @@ def main(argv):
 
         if changed:
             save(db)
+    if changed and cmd not in ("tick",) and sincronia.config():
+        spawn_sync()
     return 0
 
 
