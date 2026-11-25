@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "logan.tarefas",
+  "name": "Tarefas",
+  "version": "1.0.0",
+  "author": "logan",
+  "license": "MIT",
+  "description": "Lista de pendências com prazo e prioridade que te cobra por notificação até você fazer.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Tarefas",
+    "description": "Contador de pendências na barra, lista rápida e cobranças recorrentes.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "centerBegin",
+    "defaults": {
+      "nagIntervalMin": 60,
+      "overdueIntervalMin": 30,
+      "maxSnoozes": 3,
+      "snoozeMin": 60,
+      "quietStart": 22,
+      "quietEnd": 8
+    },
+    "schema": [
+      { "key": "nagIntervalMin", "type": "integer", "label": "Cobrança geral a cada (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 60, "description": "Lembra a pendência mais importante nesse intervalo." },
+      { "key": "overdueIntervalMin", "type": "integer", "label": "Tarefa atrasada: repetir a cada (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 30 },
+      { "key": "maxSnoozes", "type": "integer", "label": "Máximo de adiamentos por tarefa", "min": 0, "max": 99, "step": 1, "defaultValue": 3, "description": "Depois disso, só dá para concluir ou apagar." },
+      { "key": "snoozeMin", "type": "integer", "label": "Adiar por (min)", "min": 5, "max": 1440, "step": 5, "defaultValue": 60 },
+      { "key": "quietStart", "type": "integer", "label": "Silêncio a partir de (hora)", "min": 0, "max": 23, "step": 1, "defaultValue": 22 },
+      { "key": "quietEnd", "type": "integer", "label": "Silêncio até (hora)", "min": 0, "max": 23, "step": 1, "defaultValue": 8 }
+    ]
+  }
+}
