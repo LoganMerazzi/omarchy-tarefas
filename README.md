@@ -53,6 +53,29 @@ CALDAV_COLLECTION=/usuario/tarefas/   # opcional
 - Conflito (mudou nos dois lados): vence a edição mais recente.
 - Campos que outros apps põem na tarefa (categorias, etc.) são preservados.
 
+## Boletos do Google Drive
+
+Opcional. Com `~/.config/tarefas/boletos.conf`, a cada 30 min o plugin lê as
+pastas de boletos (organizadas em `AAAA/MM`) e cria uma tarefa de pagamento
+para cada boleto novo:
+
+```
+[pessoal]
+pasta = ~/GoogleDrive/Finanças/Boletos
+
+[empresa]
+pasta = ~/GoogleDrive/Finanças/Empresa/Pagamentos
+rotulo = empresa
+```
+
+- Vencimento e valor saem do código de barras (bancário ou de arrecadação, como DAS e DARF), do texto do PDF ou do nome do arquivo (`08 - Claro - Boleto.pdf` na pasta `2026/12`).
+- A tarefa traz o link do Drive (abre no celular) e o código de barras. No painel, 󰈙 abre o PDF e 󰆏 copia o código.
+- Um `Comprovante` com o mesmo nome conclui a tarefa.
+- Arquivos duplicados (mesmo código de barras) viram uma tarefa só. Nomes com "não pagar" ou "gerada errada" são ignorados.
+- PDFs protegidos: senhas em `~/.config/tarefas/pdf-senhas`, uma por linha (chmod 600). As senhas nunca aparecem na linha de comando.
+- Na primeira execução só entram boletos a vencer. Depois, entram também os vencidos há até 15 dias.
+- Manual: `python3 tarefas.py boletos -n` (só mostra) e `python3 tarefas.py boletos`.
+
 ## Terminal
 
 ```

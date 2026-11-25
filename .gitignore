@@ -8,3 +8,5 @@ radicale-users
 *.ics
 tarefas.json
 *.pdf
+pdf-senhas
+*.conf

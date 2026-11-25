@@ -475,6 +475,24 @@ Panel {
       }
 
       PanelActionButton {
+        visible: !row.isDone && !!(row.task.url || row.task.localPath)
+        iconText: "󰈙"
+        tooltipText: "Abrir boleto"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: root.run(["abrir", row.task.id])
+      }
+
+      PanelActionButton {
+        visible: !row.isDone && (!!row.task.barcodeDigits || String(row.task.notes || "").indexOf("Código de barras:") >= 0)
+        iconText: "󰆏"
+        tooltipText: "Copiar código de barras"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: root.run(["copiar", row.task.id])
+      }
+
+      PanelActionButton {
         visible: !row.isDone
         iconText: "󰒲"
         tooltipText: row.canSnooze ? "Adiar " + (root.snoozeMin >= 60 ? Math.round(root.snoozeMin / 60) + "h" : root.snoozeMin + " min") : "Sem mais adiamentos"

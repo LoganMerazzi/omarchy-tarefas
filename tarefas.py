@@ -10,10 +10,14 @@ Armazena em ~/.local/share/tarefas/tarefas.json. Usado pelo widget da barra
   tarefas.py snooze <id> 60
   tarefas.py tick            # decide e envia as cobranças (chamado pelo widget)
   tarefas.py sync            # sincroniza com o servidor CalDAV (ver sincronia.py)
+  tarefas.py boletos [-n]    # cria tarefas dos boletos do Drive (-n: só mostra)
+  tarefas.py abrir <id>      # abre o boleto da tarefa
+  tarefas.py copiar <id>     # copia o código de barras
 """
 
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -35,6 +39,12 @@ MAX_TOMBSTONES = 500
 # Rodamos com `python3 -I`, que não põe a pasta do script no sys.path.
 sys.path.insert(0, os.path.dirname(SELF))
 import sincronia  # noqa: E402
+import boletos  # noqa: E402
+
+BOLETOS_EVERY = 30 * 60
+BOLETOS_LOCK_FILE = os.path.join(DATA_DIR, ".boletos.lock")
+SKIP_WORDS = ("nao pagar", "errad", "cancelad", "substituid")
+RECEIPT_WINDOW_DAYS = 20
 
 MAX_TITLE = 200
 MAX_TASKS = 500
@@ -379,9 +389,13 @@ def tick(db, now, opts):
 # ── Sincronização ───────────────────────────────────────────────────────────
 
 def spawn_sync():
-    """Roda `sync` em segundo plano: o widget e o terminal não esperam a rede."""
+    spawn("sync")
+
+
+def spawn(what):
+    """Roda um subcomando em segundo plano: o widget e o terminal não esperam a rede."""
     try:
-        subprocess.Popen([sys.executable, "-I", SELF, "sync"], stdin=subprocess.DEVNULL,
+        subprocess.Popen([sys.executable, "-I", SELF, what], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         pass
@@ -435,7 +449,7 @@ def merge(db, remote, now):
                     t["etag"] = etag            # vence a local: sobrescreve a versão atual
         if is_dirty(t):
             t.setdefault("uid", "%s@tarefas" % t["id"])
-            uploads.append({"id": t["id"], "rev": t.get("rev", 0), "href": href or "%s.ics" % t["id"],
+            uploads.append({"id": t["id"], "rev": t.get("rev", 0), "href": href or t.get("newHref") or "%s.ics" % t["id"],
                             "etag": t.get("etag"), "ics": sincronia.to_ics(t, now, t.get("ics"))})
 
     for href, (etag, ics) in remote.items():
@@ -495,6 +509,11 @@ def sync(verbose=False):
                 for u in uploads:
                     ok, etag = results[u["id"]]
                     t = next((x for x in db["tasks"] if x["id"] == u["id"]), None)
+                    if not ok and t and not u["etag"]:
+                        # Já existe no servidor (outra máquina criou o mesmo boleto):
+                        # fica a de lá, que entra na próxima volta.
+                        db["tasks"].remove(t)
+                        continue
                     if not ok or not t:
                         continue                         # 412: resolve na próxima volta
                     stats["enviadas"] += 1
@@ -518,6 +537,167 @@ def sync(verbose=False):
         else:
             print("Falhou: %s" % status["error"], file=sys.stderr)
     return 0 if status["ok"] else 1
+
+
+# ── Boletos ─────────────────────────────────────────────────────────────────
+
+def barcode_of(t):
+    if t.get("barcodeDigits"):
+        return t["barcodeDigits"]
+    m = re.search(r"Código de barras:\s*([\d .\-]+)", t.get("notes") or "")
+    return re.sub(r"\D", "", m.group(1)) if m else ""
+
+
+def _merge_group(group):
+    b = dict(group[0])
+    for o in group[1:]:
+        for k in ("due", "value", "barcode", "barcodeDigits", "url"):
+            b[k] = b.get(k) or o.get(k)
+        if b.get("pdf") != "ok" and o.get("pdf") == "ok":
+            b["pdf"] = "ok"
+    return b
+
+
+def import_boletos(dry_run=False, verbose=False):
+    if not boletos.config():
+        if verbose:
+            print("Boletos desligado: falta %s" % boletos.CONF_FILE)
+        return 0
+    os.makedirs(DATA_DIR, exist_ok=True)
+    lock = open(BOLETOS_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+
+    with Locked():
+        db0 = load()
+        seen = dict(db0.get("boletosVistos") or {})
+        # Tarefas criadas de PDF protegido: relê o arquivo até alguma senha servir.
+        for k in (db0.get("boletosProtegidos") or {}):
+            seen.pop(k, None)
+    today = dt.date.today()
+    bills, receipts, warnings = boletos.scan(today, seen=set(seen))   # lento: sem segurar a lista
+
+    groups = {}
+    for b in bills:
+        groups.setdefault(b["key"], []).append(b)
+
+    now = int(time.time())
+    created, completed, skipped = [], [], []
+    with Locked():
+        db = load()
+        seen = db.setdefault("boletosVistos", {})
+        locked_pdfs = db.setdefault("boletosProtegidos", {})
+        enriched = []
+        first_run = not db.get("boletosInit")
+        cutoff = today if first_run else today - dt.timedelta(days=boletos.LOOKBACK_DAYS)
+
+        def paid(match_key, due):
+            return any(r["key"] == match_key and due and abs((r["date"] - due).days) <= RECEIPT_WINDOW_DAYS
+                       for r in receipts)
+
+        for key, group in groups.items():
+            b = _merge_group(group)
+            keys = [key] + [g["fileKey"] for g in group]
+            old_ids = [locked_pdfs[g["fileKey"]] for g in group if g["fileKey"] in locked_pdfs]
+            if old_ids:
+                if b["pdf"] != "ok":
+                    continue                     # ainda sem senha que sirva
+                for g in group:
+                    locked_pdfs.pop(g["fileKey"], None)
+                for k in keys:
+                    seen[k] = now
+                t = next((x for x in db["tasks"] if x["id"] == old_ids[0]), None)
+                if t and not t.get("done"):
+                    t["title"], t["notes"] = (x[:MAX_TITLE] if i == 0 else x for i, x in enumerate(boletos.task_text(b)))
+                    t["barcodeDigits"] = b["barcodeDigits"]
+                    if b["due"]:
+                        t["due"] = int(dt.datetime.combine(b["due"], dt.time(DEFAULT_MORNING_HOUR)).timestamp())
+                    enriched.append(t)
+                    if not dry_run:
+                        touch(t, now)
+                continue
+            if any(k in seen for k in keys):
+                for k in keys:
+                    seen[k] = now
+                continue
+            for k in keys:
+                seen[k] = now
+            label = "%s/%s" % (b["month"], b["file"])
+            if any(w in boletos.fold(b["file"]) for w in SKIP_WORDS):
+                skipped.append((label, "marcado para não pagar"))
+                continue
+            if not b["due"]:
+                skipped.append((label, "sem vencimento"))
+                continue
+            if b["due"] < cutoff:
+                skipped.append((label, "vencido em %s" % b["due"].strftime("%d/%m")))
+                continue
+            if paid(b["matchKey"], b["due"]):
+                skipped.append((label, "já tem comprovante"))
+                continue
+            title, notes = boletos.task_text(b)
+            due = int(dt.datetime.combine(b["due"], dt.time(DEFAULT_MORNING_HOUR)).timestamp())
+            tid = uuid.uuid4().hex[:12]
+            # UID fixo pelo código de barras: duas máquinas lendo o mesmo boleto
+            # geram a mesma tarefa no servidor.
+            uid = "boleto-" + hashlib.sha1(key.encode()).hexdigest()[:20]
+            t = {"id": tid, "uid": uid + "@tarefas", "newHref": uid + ".ics", "title": title[:MAX_TITLE],
+                 "priority": 1, "due": due, "created": now, "done": None, "snoozeUntil": 0, "snoozes": 0,
+                 "lastNag": 0, "notes": notes, "url": b["url"], "localPath": b["path"],
+                 "barcodeDigits": b["barcodeDigits"], "boleto": b["matchKey"]}
+            if any(x.get("uid") == t["uid"] for x in db["tasks"]):
+                continue
+            touch(t, now)
+            created.append(t)
+            if not dry_run:
+                db["tasks"].append(t)
+                if b["pdf"] == "protegido":
+                    for g in group:
+                        locked_pdfs[g["fileKey"]] = tid
+                        seen.pop(g["fileKey"], None)
+
+        for r in receipts:
+            rk = "rec:%s:%s:%s" % (r["source"], r["date"], r["key"])
+            if rk in seen:
+                continue
+            seen[rk] = now
+            for t in db["tasks"]:
+                if t.get("done") or not t.get("boleto") or t["boleto"] != r["key"] or not t.get("due"):
+                    continue
+                if abs((dt.date.fromtimestamp(t["due"]) - r["date"]).days) <= RECEIPT_WINDOW_DAYS:
+                    completed.append(t)
+                    if not dry_run:
+                        t["done"] = now
+                        touch(t, now)
+
+        old = now - 400 * 86400
+        db["boletosVistos"] = {k: v for k, v in seen.items() if v >= old}
+        live = {t["id"] for t in db["tasks"] if not t.get("done")}
+        db["boletosProtegidos"] = {k: v for k, v in locked_pdfs.items() if v in live}
+        if not dry_run:
+            db["boletosInit"] = db.get("boletosInit") or now
+            save(db)
+
+    if verbose:
+        print(("[simulação] " if dry_run else "") + "%d tarefa(s) criada(s), %d concluída(s) por comprovante."
+              % (len(created), len(completed)))
+        for t in created:
+            print("  + %s  [%s]" % (t["title"], human_due(t["due"])))
+        for t in completed:
+            print("  ✓ %s" % t["title"])
+        for t in enriched:
+            print("  ↻ %s (PDF aberto, dados completados)" % t["title"])
+        if skipped:
+            print("Ignorados:")
+            for label, why in skipped:
+                print("  - %s: %s" % (label, why))
+        for w in warnings:
+            print("  ! " + w)
+    if (created or completed or enriched) and not dry_run and sincronia.config():
+        spawn_sync()
+    return 0
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -545,6 +725,9 @@ def main(argv):
 
     if cmd == "sync":
         return sync(verbose=sys.stdout.isatty() or "-v" in args)
+
+    if cmd == "boletos":
+        return import_boletos(dry_run="-n" in args, verbose=sys.stdout.isatty() or "-v" in args)
 
     if cmd == "open":
         subprocess.run(["omarchy-shell", "-q", "logan.tarefas", "open"], timeout=10)
@@ -664,6 +847,29 @@ def main(argv):
             changed = True
             out({"ok": True})
 
+        elif cmd in ("abrir", "copiar"):
+            t = find(db, args[0]) if args else None
+            if not t:
+                print("Tarefa não encontrada", file=sys.stderr)
+                return 1
+            if cmd == "abrir":
+                target = t.get("localPath") if t.get("localPath") and os.path.exists(t["localPath"]) else t.get("url")
+                if not target:
+                    print("Esta tarefa não tem boleto", file=sys.stderr)
+                    return 1
+                subprocess.Popen(["xdg-open", target], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            else:
+                code = barcode_of(t)
+                if not code:
+                    print("Esta tarefa não tem código de barras", file=sys.stderr)
+                    return 1
+                subprocess.run(["wl-copy", code], timeout=5)
+                subprocess.run(["omarchy-notification-send", "--app-name", "Tarefas", "-g", "󰆏", "-t", "3000",
+                                "Código copiado", t.get("title", "")], timeout=10, capture_output=True)
+            out({"ok": True})
+            return 0
+
         elif cmd == "tick":
             opts = {
                 "interval": opt_int(args, "--interval", 60, 5, 24 * 60),
@@ -678,6 +884,10 @@ def main(argv):
                 db["lastSyncTry"] = now
                 changed = True
                 spawn_sync()
+            if now - (db.get("lastBoletosTry") or 0) >= BOLETOS_EVERY and boletos.config():
+                db["lastBoletosTry"] = now
+                changed = True
+                spawn("boletos")
             changed = bool(sent) or db.get("maxSnoozes") != opts["max_snoozes"]
             db["maxSnoozes"] = opts["max_snoozes"]
             out({"sent": sent})
