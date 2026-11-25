@@ -2,6 +2,17 @@
 
 Lista de pendências na barra do Omarchy que **te cobra até você fazer**.
 
+![Tarefas com pendências](screenshots/tarefas.png)
+
+![Tudo em dia](screenshots/vazio.png)
+
+## Instalação
+
+```
+git clone https://github.com/LoganMerazzi/omarchy-tarefas ~/.config/omarchy/plugins/logan.tarefas
+omarchy bar put logan.tarefas --section centerBegin --index 0
+```
+
 - Clique no contador da barra → painel; digite e Enter para adicionar.
 - Clique numa tarefa para concluir (clique de novo em "Concluídas" para desfazer).
 - 󰒲 adia, 󰆴 apaga. Cada tarefa tem um número limitado de adiamentos.
